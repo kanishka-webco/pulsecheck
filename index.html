@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>PulseCheck — Performance Appraisal</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.8.0/umd/Recharts.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0a0f;
+    --surface: #111118;
+    --surface2: #1a1a24;
+    --border: #232333;
+    --border2: #2e2e44;
+    --text: #f0f0f8;
+    --text2: #8888aa;
+    --text3: #555577;
+    --accent: #7c6af7;
+    --accent2: #a594ff;
+    --green: #22c98a;
+    --orange: #f5a623;
+    --red: #f05568;
+    --blue: #4db8ff;
+    --yellow: #ffd166;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; }
+  #root { height: 100%; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+  input, textarea, select { font-family: inherit; }
+  button { cursor: pointer; font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+const { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, RadialBarChart, RadialBar, Cell } = window.Recharts || {};
+
+// ⚠️ Change this to your backend URL when deploying (e.g. https://pulsecheck-api.onrender.com/api)
+const API = 'https://pulsecheck-api.webco-aa2.workers.dev/api'; // ⚠️ REPLACE with your actual Worker URL from Stage 2
+
+// ─── API HELPER ────────────────────────────────────────────────────────────
+const api = {
+  token: localStorage.getItem('token'),
+  headers() { return { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` }; },
+  async get(path) { const r = await fetch(API + path, { headers: this.headers() }); return r.json(); },
+  async post(path, body) { const r = await fetch(API + path, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) }); return r.json(); },
+  async put(path, body) { const r = await fetch(API + path, { method: 'PUT', headers: this.headers(), body: JSON.stringify(body) }); return r.json(); },
+  async del(path) { const r = await fetch(API + path, { method: 'DELETE', headers: this.headers() }); return r.json(); },
+};
+
+// ─── HELPERS ───────────────────────────────────────────────────────────────
+const getBand = (pts) => {
+  if (pts >= 85) return { label: 'Excellent', color: '#22c98a', bg: '#22c98a18' };
+  if (pts >= 70) return { label: 'Satisfactory', color: '#4db8ff', bg: '#4db8ff18' };
+  if (pts >= 55) return { label: 'Needs Improvement', color: '#f5a623', bg: '#f5a62318' };
+  return { label: 'Critical Review', color: '#f05568', bg: '#f0556818' };
+};
+const fmtMonth = (key) => { if (!key) return ''; const [y, m] = key.split('-'); return new Date(y, m - 1).toLocaleString('default', { month: 'long', year: 'numeric' }); };
+const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+const DEDUCTION_CATS = ['Task Overdue (1-2 days)', 'Task Overdue (3-5 days)', 'Task Not Addressed', 'EOD Report Missing', 'EOD Report Late', 'CRM Not Synced', 'Lead Not Nurtured', 'Campaign Sync Failed', 'Notification Not Sent', 'SEO Tracker Not Updated', 'Internal Process Violation', 'Repeated Mistake', 'Misuse of Resources'];
+const ADDITION_CATS = ['Client Compliment', 'Above & Beyond', 'Certification / Upskilling', 'Proactive Issue Flagging'];
+const DEDUCTION_PTS = { 'Task Overdue (1-2 days)': 2, 'Task Overdue (3-5 days)': 5, 'Task Not Addressed': 10, 'EOD Report Missing': 3, 'EOD Report Late': 1, 'CRM Not Synced': 5, 'Lead Not Nurtured': 5, 'Campaign Sync Failed': 8, 'Notification Not Sent': 5, 'SEO Tracker Not Updated': 3, 'Internal Process Violation': 5, 'Repeated Mistake': 8, 'Misuse of Resources': 6 };
+const ADDITION_PTS = { 'Client Compliment': 8, 'Above & Beyond': 10, 'Certification / Upskilling': 10, 'Proactive Issue Flagging': 5 };
+
+// ─── COMPONENTS ───────────────────────────────────────────────────────────
+const Modal = ({ open, onClose, title, children, width = 520 }) => {
+  if (!open) return null;
+  return (
+    <div style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',backdropFilter:'blur(4px)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px' }} onClick={onClose}>
+      <div style={{ background:'var(--surface)',border:'1px solid var(--border2)',borderRadius:16,width:'100%',maxWidth:width,maxHeight:'90vh',overflow:'auto' }} onClick={e=>e.stopPropagation()}>
+        <div style={{ padding:'24px 28px 20px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+          <span style={{ fontFamily:'Syne',fontWeight:700,fontSize:18 }}>{title}</span>
+          <button onClick={onClose} style={{ background:'none',border:'none',color:'var(--text2)',fontSize:22,lineHeight:1 }}>×</button>
+        </div>
+        <div style={{ padding:'24px 28px' }}>{children}</div>
+      </div>
+    </div>
+  );
+};
+
+const Inp = ({ label, ...props }) => (
+  <div style={{ marginBottom:16 }}>
+    {label && <label style={{ display:'block',fontSize:12,fontWeight:600,color:'var(--text2)',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em' }}>{label}</label>}
+    <input style={{ width:'100%',background:'var(--surface2)',border:'1px solid var(--border2)',borderRadius:8,padding:'10px 14px',color:'var(--text)',fontSize:14,outline:'none' }} {...props}/>
+  </div>
+);
+
+const Sel = ({ label, options, ...props }) => (
+  <div style={{ marginBottom:16 }}>
+    {label && <label style={{ display:'block',fontSize:12,fontWeight:600,color:'var(--text2)',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em' }}>{label}</label>}
+    <select style={{ width:'100%',background:'var(--surface2)',border:'1px solid var(--border2)',borderRadius:8,padding:'10px 14px',color:'var(--text)',fontSize:14,outline:'none' }} {...props}>
+      {options.map(o => <option key={o.value||o} value={o.value||o}>{o.label||o}</option>)}
+    </select>
+  </div>
+);
+
+const Btn = ({ children, variant='primary', size='md', ...props }) => {
+  const styles = {
+    primary: { background:'var(--accent)',color:'#fff',border:'none' },
+    ghost: { background:'transparent',color:'var(--text2)',border:'1px solid var(--border2)' },
+    danger: { background:'#f0556818',color:'var(--red)',border:'1px solid #f0556830' },
+    success: { background:'#22c98a18',color:'var(--green)',border:'1px solid #22c98a30' },
+  };
+  const sizes = { sm: { padding:'6px 14px',fontSize:12 }, md: { padding:'10px 20px',fontSize:14 }, lg: { padding:'13px 28px',fontSize:15 } };
+  return <button style={{ borderRadius:8,fontWeight:600,cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',...styles[variant],...sizes[size] }} {...props}>{children}</button>;
+};
+
+const ScoreRing = ({ score, size = 80 }) => {
+  const band = getBand(score);
+  const pct = Math.max(0, Math.min(100, (score / 150) * 100));
+  const r = (size / 2) - 8;
+  const circ = 2 * Math.PI * r;
+  const dash = (pct / 100) * circ;
+  return (
+    <div style={{ position:'relative',width:size,height:size,flexShrink:0 }}>
+      <svg width={size} height={size} style={{ transform:'rotate(-90deg)' }}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--border2)" strokeWidth={6}/>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={band.color} strokeWidth={6} strokeDasharray={`${dash} ${circ}`} strokeLinecap="round" style={{ transition:'stroke-dasharray 0.6s ease' }}/>
+      </svg>
+      <div style={{ position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center' }}>
+        <span style={{ fontFamily:'Syne',fontWeight:800,fontSize:size>70?18:14,color:band.color,lineHeight:1 }}>{score}</span>
+      </div>
+    </div>
+  );
+};
+
+const Avatar = ({ initials, size = 40, color = '#7c6af7' }) => (
+  <div style={{ width:size,height:size,borderRadius:'50%',background:`${color}22`,border:`2px solid ${color}44`,display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'Syne',fontWeight:700,fontSize:size*0.35,color,flexShrink:0 }}>
+    {initials}
+  </div>
+);
+
+const AVATAR_COLORS = ['#7c6af7','#22c98a','#f5a623','#4db8ff','#f05568','#ffd166','#a594ff'];
+const getAvatarColor = (name) => AVATAR_COLORS[name?.charCodeAt(0) % AVATAR_COLORS.length];
+
+// ─── LOGIN PAGE ────────────────────────────────────────────────────────────
+const LoginPage = ({ onLogin }) => {
+  const [form, setForm] = useState({ username: 'admin', password: 'admin123' });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    setLoading(true); setError('');
+    try {
+      const res = await fetch(API + '/auth/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(form) });
+      const data = await res.json();
+      if (data.token) { api.token = data.token; localStorage.setItem('token', data.token); onLogin(data.user); }
+      else setError('Invalid credentials');
+    } catch { setError('Cannot connect to server. Make sure backend is running on port 3001.'); }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg)',position:'relative',overflow:'hidden' }}>
+      <div style={{ position:'absolute',top:-200,right:-200,width:600,height:600,background:'radial-gradient(circle,#7c6af722 0%,transparent 70%)',pointerEvents:'none' }}/>
+      <div style={{ position:'absolute',bottom:-200,left:-200,width:500,height:500,background:'radial-gradient(circle,#22c98a11 0%,transparent 70%)',pointerEvents:'none' }}/>
+      <div style={{ width:'100%',maxWidth:400,padding:20 }}>
+        <div style={{ textAlign:'center',marginBottom:40 }}>
+          <div style={{ fontFamily:'Syne',fontSize:32,fontWeight:800,letterSpacing:'-0.02em' }}>Pulse<span style={{ color:'var(--accent)' }}>Check</span></div>
+          <div style={{ color:'var(--text2)',fontSize:14,marginTop:8 }}>Performance Appraisal Platform</div>
+        </div>
+        <div style={{ background:'var(--surface)',border:'1px solid var(--border2)',borderRadius:16,padding:32 }}>
+          <div style={{ fontFamily:'Syne',fontSize:18,fontWeight:700,marginBottom:24 }}>Admin Sign In</div>
+          <Inp label="Username" value={form.username} onChange={e=>setForm({...form,username:e.target.value})} placeholder="admin"/>
+          <Inp label="Password" type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} placeholder="••••••••" onKeyDown={e=>e.key==='Enter'&&submit()}/>
+          {error && <div style={{ color:'var(--red)',fontSize:13,marginBottom:16,padding:'10px 14px',background:'#f0556818',borderRadius:8 }}>{error}</div>}
+          <Btn style={{ width:'100%',marginTop:8 }} onClick={submit} disabled={loading}>{loading ? 'Signing in...' : 'Sign In'}</Btn>
+          <div style={{ marginTop:16,fontSize:12,color:'var(--text3)',textAlign:'center' }}>Default: admin / admin123</div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── SIDEBAR ───────────────────────────────────────────────────────────────
+const Sidebar = ({ page, setPage, user, onLogout }) => {
+  const items = [
+    { id:'dashboard', label:'Dashboard', icon:'▦' },
+    { id:'employees', label:'Employees', icon:'◉' },
+    { id:'appraisals', label:'Appraisals', icon:'◈' },
+    { id:'events', label:'Point Events', icon:'◎' },
+  ];
+  return (
+    <div style={{ width:220,flexShrink:0,background:'var(--surface)',borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column',height:'100vh',position:'sticky',top:0 }}>
+      <div style={{ padding:'24px 20px 20px' }}>
+        <div style={{ fontFamily:'Syne',fontSize:22,fontWeight:800,letterSpacing:'-0.02em' }}>Pulse<span style={{ color:'var(--accent)' }}>Check</span></div>
+        <div style={{ fontSize:11,color:'var(--text3)',marginTop:3 }}>PERFORMANCE PLATFORM</div>
+      </div>
+      <div style={{ padding:'8px 12px',flex:1 }}>
+        {items.map(item => (
+          <button key={item.id} onClick={() => setPage(item.id)} style={{ width:'100%',display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:8,border:'none',background: page===item.id ? 'var(--accent)18' : 'transparent',color: page===item.id ? 'var(--accent2)' : 'var(--text2)',fontFamily:'inherit',fontSize:14,fontWeight: page===item.id ? 600 : 400,cursor:'pointer',marginBottom:2,textAlign:'left',transition:'all 0.15s' }}>
+            <span style={{ fontSize:16,opacity:0.8 }}>{item.icon}</span>{item.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ padding:'16px 20px',borderTop:'1px solid var(--border)' }}>
+        <div style={{ fontSize:13,fontWeight:600,marginBottom:2 }}>{user?.name}</div>
+        <div style={{ fontSize:11,color:'var(--text3)',marginBottom:12 }}>Administrator</div>
+        <Btn variant="ghost" size="sm" onClick={onLogout} style={{ width:'100%' }}>Sign Out</Btn>
+      </div>
+    </div>
+  );
+};
+
+// ─── DASHBOARD PAGE ────────────────────────────────────────────────────────
+const DashboardPage = ({ onNavigate }) => {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { api.get('/dashboard').then(d => { setData(d); setLoading(false); }); }, []);
+
+  if (loading) return <div style={{ padding:40,color:'var(--text2)' }}>Loading dashboard...</div>;
+  if (!data) return null;
+
+  const { sessions = [], recentEvents = [], averageScore, totalEmployees, monthKey } = data;
+
+  return (
+    <div style={{ padding:32,maxWidth:1200 }}>
+      <div style={{ marginBottom:32 }}>
+        <div style={{ fontFamily:'Syne',fontSize:28,fontWeight:800,letterSpacing:'-0.02em' }}>Dashboard</div>
+        <div style={{ color:'var(--text2)',fontSize:14,marginTop:4 }}>{fmtMonth(monthKey)} — Live Overview</div>
+      </div>
+
+      {/* Stats Row */}
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:16,marginBottom:28 }}>
+        {[
+          { label:'Total Employees', value: totalEmployees, color:'var(--accent)', sub:'Active' },
+          { label:'Avg Score', value: averageScore, color: getBand(averageScore).color, sub:'This month' },
+          { label:'Top Score', value: sessions[0]?.currentPoints || '—', color:'var(--green)', sub: sessions[0]?.employee?.name?.split(' ')[0] || '' },
+          { label:'Needs Attention', value: sessions.filter(s=>s.currentPoints<70).length, color:'var(--orange)', sub:'Below 70 pts' },
+        ].map(s => (
+          <div key={s.label} style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:'20px 22px' }}>
+            <div style={{ fontSize:12,color:'var(--text2)',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:10 }}>{s.label}</div>
+            <div style={{ fontFamily:'Syne',fontSize:32,fontWeight:800,color:s.color,lineHeight:1 }}>{s.value}</div>
+            <div style={{ fontSize:12,color:'var(--text3)',marginTop:6 }}>{s.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display:'grid',gridTemplateColumns:'1fr 340px',gap:20,marginBottom:20 }}>
+        {/* Employee Score Cards */}
+        <div style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:24 }}>
+          <div style={{ fontFamily:'Syne',fontWeight:700,fontSize:16,marginBottom:20 }}>Employee Scores — {fmtMonth(monthKey)}</div>
+          <div style={{ display:'flex',flexDirection:'column',gap:12 }}>
+            {sessions.sort((a,b)=>b.currentPoints-a.currentPoints).map(s => {
+              const band = getBand(s.currentPoints);
+              const pct = Math.max(0, Math.min(100, (s.currentPoints / 150) * 100));
+              return (
+                <div key={s.id} style={{ display:'flex',alignItems:'center',gap:16,padding:'14px 16px',background:'var(--surface2)',borderRadius:10,cursor:'pointer' }} onClick={()=>onNavigate('appraisals',s.employeeId)}>
+                  <Avatar initials={s.employee?.avatar} size={40} color={getAvatarColor(s.employee?.name)}/>
+                  <div style={{ flex:1,minWidth:0 }}>
+                    <div style={{ fontWeight:600,fontSize:14,marginBottom:2 }}>{s.employee?.name}</div>
+                    <div style={{ fontSize:12,color:'var(--text2)' }}>{s.employee?.jobTitle}</div>
+                    <div style={{ marginTop:8,height:5,background:'var(--border2)',borderRadius:3,overflow:'hidden' }}>
+                      <div style={{ height:'100%',width:`${pct}%`,background:band.color,borderRadius:3,transition:'width 0.6s ease' }}/>
+                    </div>
+                  </div>
+                  <div style={{ textAlign:'right',flexShrink:0 }}>
+                    <div style={{ fontFamily:'Syne',fontWeight:800,fontSize:22,color:band.color }}>{s.currentPoints}</div>
+                    <div style={{ fontSize:11,color:band.color,background:band.bg,padding:'2px 8px',borderRadius:20,marginTop:4 }}>{band.label}</div>
+                  </div>
+                </div>
+              );
+            })}
+            {sessions.length === 0 && <div style={{ color:'var(--text3)',textAlign:'center',padding:20 }}>No active sessions this month</div>}
+          </div>
+        </div>
+
+        {/* Recent Events */}
+        <div style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:24 }}>
+          <div style={{ fontFamily:'Syne',fontWeight:700,fontSize:16,marginBottom:20 }}>Recent Activity</div>
+          <div style={{ display:'flex',flexDirection:'column',gap:10 }}>
+            {recentEvents.slice(0,8).map(e => (
+              <div key={e.id} style={{ display:'flex',alignItems:'flex-start',gap:10,paddingBottom:10,borderBottom:'1px solid var(--border)' }}>
+                <div style={{ width:28,height:28,borderRadius:6,background: e.type==='deduction'?'#f0556818':'#22c98a18',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,flexShrink:0 }}>
+                  {e.type==='deduction'?'↓':'↑'}
+                </div>
+                <div style={{ flex:1,minWidth:0 }}>
+                  <div style={{ fontSize:12,fontWeight:600,color:e.type==='deduction'?'var(--red)':'var(--green)' }}>
+                    {e.type==='deduction'?'':'+'}{ Math.abs(e.points)} pts — {e.employee?.name?.split(' ')[0]}
+                  </div>
+                  <div style={{ fontSize:11,color:'var(--text3)',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>{e.category}</div>
+                </div>
+              </div>
+            ))}
+            {recentEvents.length === 0 && <div style={{ color:'var(--text3)',fontSize:13 }}>No events yet this month</div>}
+          </div>
+        </div>
+      </div>
+
+      {/* Band Legend */}
+      <div style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:20 }}>
+        <div style={{ fontFamily:'Syne',fontWeight:700,fontSize:14,marginBottom:16 }}>Score Bands</div>
+        <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12 }}>
+          {[{r:'85–150',l:'Excellent',c:'#22c98a'},{r:'70–84',l:'Satisfactory',c:'#4db8ff'},{r:'55–69',l:'Needs Improvement',c:'#f5a623'},{r:'0–54',l:'Critical Review',c:'#f05568'}].map(b=>(
+            <div key={b.l} style={{ padding:'12px 16px',background:`${b.c}10`,border:`1px solid ${b.c}30`,borderRadius:8,display:'flex',alignItems:'center',gap:10 }}>
+              <div style={{ width:10,height:10,borderRadius:'50%',background:b.c,flexShrink:0 }}/>
+              <div>
+                <div style={{ fontSize:13,fontWeight:600,color:b.c }}>{b.l}</div>
+                <div style={{ fontSize:11,color:'var(--text3)' }}>{b.r} points</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── EMPLOYEES PAGE ────────────────────────────────────────────────────────
+const EmployeesPage = () => {
+  const [employees, setEmployees] = useState([]);
+  const [modal, setModal] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ name:'',jobTitle:'',department:'Marketing',email:'',phone:'',startDate:'' });
+  const depts = ['Marketing','Sales','Design','Development','Operations','HR'];
+
+  const load = () => api.get('/employees').then(setEmployees);
+  useEffect(() => { load(); }, []);
+
+  const openAdd = () => { setEditing(null); setForm({ name:'',jobTitle:'',department:'Marketing',email:'',phone:'',startDate:new Date().toISOString().split('T')[0] }); setModal(true); };
+  const openEdit = (emp) => { setEditing(emp); setForm({ name:emp.name,jobTitle:emp.jobTitle,department:emp.department,email:emp.email,phone:emp.phone||'',startDate:emp.startDate }); setModal(true); };
+
+  const save = async () => {
+    if (editing) await api.put(`/employees/${editing.id}`, form);
+    else await api.post('/employees', form);
+    load(); setModal(false);
+  };
+
+  const del = async (id) => { if (confirm('Remove this employee?')) { await api.del(`/employees/${id}`); load(); } };
+
+  return (
+    <div style={{ padding:32,maxWidth:1100 }}>
+      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:32 }}>
+        <div>
+          <div style={{ fontFamily:'Syne',fontSize:28,fontWeight:800,letterSpacing:'-0.02em' }}>Employees</div>
+          <div style={{ color:'var(--text2)',fontSize:14,marginTop:4 }}>{employees.length} team members</div>
+        </div>
+        <Btn onClick={openAdd}>+ Add Employee</Btn>
+      </div>
+
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:16 }}>
+        {employees.map(emp => (
+          <div key={emp.id} style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:24 }}>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16 }}>
+              <div style={{ display:'flex',alignItems:'center',gap:12 }}>
+                <Avatar initials={emp.avatar} size={48} color={getAvatarColor(emp.name)}/>
+                <div>
+                  <div style={{ fontFamily:'Syne',fontWeight:700,fontSize:16 }}>{emp.name}</div>
+                  <div style={{ fontSize:13,color:'var(--accent2)',marginTop:2 }}>{emp.jobTitle}</div>
+                </div>
+              </div>
+              <div style={{ display:'flex',gap:8 }}>
+                <Btn variant="ghost" size="sm" onClick={()=>openEdit(emp)}>Edit</Btn>
+                <Btn variant="danger" size="sm" onClick={()=>del(emp.id)}>×</Btn>
+              </div>
+            </div>
+            <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:8 }}>
+              {[{l:'Department',v:emp.department},{l:'Email',v:emp.email},{l:'Phone',v:emp.phone||'—'},{l:'Start Date',v:emp.startDate?fmtDate(emp.startDate):'—'}].map(f=>(
+                <div key={f.l} style={{ background:'var(--surface2)',borderRadius:8,padding:'10px 12px' }}>
+                  <div style={{ fontSize:10,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4 }}>{f.l}</div>
+                  <div style={{ fontSize:13,fontWeight:500 }}>{f.v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Modal open={modal} onClose={()=>setModal(false)} title={editing ? 'Edit Employee' : 'Add Employee'}>
+        <Inp label="Full Name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="John Smith"/>
+        <Inp label="Job Title" value={form.jobTitle} onChange={e=>setForm({...form,jobTitle:e.target.value})} placeholder="e.g. SEO Specialist"/>
+        <Sel label="Department" value={form.department} onChange={e=>setForm({...form,department:e.target.value})} options={depts}/>
+        <Inp label="Email" type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} placeholder="employee@company.com"/>
+        <Inp label="Phone" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})} placeholder="+94 77 123 4567"/>
+        <Inp label="Start Date" type="date" value={form.startDate} onChange={e=>setForm({...form,startDate:e.target.value})}/>
+        <div style={{ display:'flex',gap:10,justifyContent:'flex-end',marginTop:8 }}>
+          <Btn variant="ghost" onClick={()=>setModal(false)}>Cancel</Btn>
+          <Btn onClick={save}>{editing ? 'Save Changes' : 'Add Employee'}</Btn>
+        </div>
+      </Modal>
+    </div>
+  );
+};
+
+// ─── APPRAISALS PAGE ───────────────────────────────────────────────────────
+const AppraisalsPage = ({ initialEmployee }) => {
+  const [sessions, setSessions] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [selectedEmp, setSelectedEmp] = useState(initialEmployee || null);
+  const [selectedSession, setSelectedSession] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [eventModal, setEventModal] = useState(false);
+  const [eventForm, setEventForm] = useState({ type:'deduction', category:'', points:'', note:'' });
+  const [monthKey] = useState(() => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; });
+
+  const load = async () => {
+    const [s, e] = await Promise.all([api.get(`/sessions?monthKey=${monthKey}`), api.get('/employees')]);
+    setSessions(s); setEmployees(e);
+    if (initialEmployee && !selectedEmp) setSelectedEmp(initialEmployee);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    if (selectedEmp) {
+      api.get(`/events?employeeId=${selectedEmp}&monthKey=${monthKey}`).then(setEvents);
+      api.get(`/employees/${selectedEmp}/history`).then(setHistory);
+      const s = sessions.find(s=>s.employeeId===selectedEmp);
+      setSelectedSession(s);
+    }
+  }, [selectedEmp, sessions]);
+
+  const submitEvent = async () => {
+    if (!eventForm.category || !eventForm.note) return alert('Please fill in all fields');
+    await api.post('/events', { employeeId:selectedEmp, type:eventForm.type, category:eventForm.category, points:eventForm.points, note:eventForm.note, monthKey });
+    setEventModal(false);
+    load();
+    api.get(`/events?employeeId=${selectedEmp}&monthKey=${monthKey}`).then(setEvents);
+  };
+
+  const removeEvent = async (id) => {
+    if (!confirm('Remove this event and reverse points?')) return;
+    await api.del(`/events/${id}`);
+    load();
+    api.get(`/events?employeeId=${selectedEmp}&monthKey=${monthKey}`).then(setEvents);
+  };
+
+  const openEventModal = (type) => {
+    const defCat = type==='deduction' ? DEDUCTION_CATS[0] : ADDITION_CATS[0];
+    const defPts = type==='deduction' ? DEDUCTION_PTS[defCat] : ADDITION_PTS[defCat];
+    setEventForm({ type, category:defCat, points:defPts, note:'' });
+    setEventModal(true);
+  };
+
+  const emp = employees.find(e=>e.id===selectedEmp);
+  const session = selectedSession || sessions.find(s=>s.employeeId===selectedEmp);
+  const band = session ? getBand(session.currentPoints) : null;
+
+  const chartData = history.map(h => ({ month: fmtMonth(h.monthKey).split(' ')[0], score: h.currentPoints }));
+
+  return (
+    <div style={{ padding:32,maxWidth:1200,display:'grid',gridTemplateColumns:'260px 1fr',gap:20 }}>
+      {/* Employee List */}
+      <div>
+        <div style={{ fontFamily:'Syne',fontSize:22,fontWeight:800,letterSpacing:'-0.02em',marginBottom:20 }}>Appraisals</div>
+        <div style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,overflow:'hidden' }}>
+          <div style={{ padding:'14px 16px',borderBottom:'1px solid var(--border)',fontSize:11,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'0.06em' }}>{fmtMonth(monthKey)}</div>
+          {sessions.map(s => {
+            const b = getBand(s.currentPoints);
+            const e = employees.find(e=>e.id===s.employeeId);
+            return (
+              <div key={s.id} onClick={()=>setSelectedEmp(s.employeeId)} style={{ padding:'14px 16px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',background:selectedEmp===s.employeeId?'var(--surface2)':'transparent',borderBottom:'1px solid var(--border)',transition:'background 0.15s' }}>
+                <Avatar initials={e?.avatar} size={36} color={getAvatarColor(e?.name)}/>
+                <div style={{ flex:1,minWidth:0 }}>
+                  <div style={{ fontSize:13,fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>{e?.name}</div>
+                  <div style={{ fontSize:11,color:'var(--text3)' }}>{e?.jobTitle}</div>
+                </div>
+                <div style={{ fontFamily:'Syne',fontWeight:700,fontSize:16,color:b.color }}>{s.currentPoints}</div>
+              </div>
+            );
+          })}
+          {sessions.length===0 && <div style={{ padding:20,color:'var(--text3)',fontSize:13,textAlign:'center' }}>No sessions this month</div>}
+        </div>
+      </div>
+
+      {/* Detail Panel */}
+      {selectedEmp && emp && session ? (
+        <div>
+          {/* Header */}
+          <div style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:24,marginBottom:20,display:'flex',alignItems:'center',gap:20 }}>
+            <Avatar initials={emp.avatar} size={64} color={getAvatarColor(emp.name)}/>
+            <div style={{ flex:1 }}>
+              <div style={{ fontFamily:'Syne',fontSize:22,fontWeight:800 }}>{emp.name}</div>
+              <div style={{ color:'var(--accent2)',fontSize:14,marginTop:2 }}>{emp.jobTitle} · {emp.department}</div>
+            </div>
+            <ScoreRing score={session.currentPoints} size={90}/>
+            <div style={{ textAlign:'center' }}>
+              <div style={{ fontFamily:'Syne',fontWeight:700,fontSize:13,color:band.color,background:band.bg,padding:'6px 14px',borderRadius:20 }}>{band.label}</div>
+              <div style={{ fontSize:11,color:'var(--text3)',marginTop:6 }}>{session.currentPoints} / {session.maxPoints} pts</div>
+            </div>
+            <div style={{ display:'flex',flexDirection:'column',gap:8 }}>
+              <Btn variant="danger" size="sm" onClick={()=>openEventModal('deduction')}>− Deduct Points</Btn>
+              <Btn variant="success" size="sm" onClick={()=>openEventModal('addition')}>+ Add Points</Btn>
+            </div>
+          </div>
+
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 300px',gap:20 }}>
+            {/* Events */}
+            <div style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:24 }}>
+              <div style={{ fontFamily:'Syne',fontWeight:700,fontSize:16,marginBottom:20 }}>Point Events — {fmtMonth(monthKey)}</div>
+              {events.length === 0 && <div style={{ color:'var(--text3)',fontSize:13,padding:'20px 0' }}>No events recorded this month.</div>}
+              <div style={{ display:'flex',flexDirection:'column',gap:10 }}>
+                {events.map(e => (
+                  <div key={e.id} style={{ padding:'14px 16px',background:'var(--surface2)',borderRadius:10,display:'flex',gap:14,alignItems:'flex-start' }}>
+                    <div style={{ width:32,height:32,borderRadius:8,background:e.type==='deduction'?'#f0556818':'#22c98a18',display:'flex',alignItems:'center',justifyContent:'center',fontSize:15,flexShrink:0,color:e.type==='deduction'?'var(--red)':'var(--green)',fontWeight:700 }}>
+                      {e.type==='deduction'?'−':'+'}
+                    </div>
+                    <div style={{ flex:1,minWidth:0 }}>
+                      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start' }}>
+                        <div>
+                          <span style={{ fontWeight:600,fontSize:14,color:e.type==='deduction'?'var(--red)':'var(--green)' }}>
+                            {e.type==='deduction'?'':'+'}{ Math.abs(e.points)} pts
+                          </span>
+                          <span style={{ fontSize:13,color:'var(--text2)',marginLeft:8 }}>{e.category}</span>
+                        </div>
+                        <button onClick={()=>removeEvent(e.id)} style={{ background:'none',border:'none',color:'var(--text3)',cursor:'pointer',fontSize:16,lineHeight:1,padding:'0 4px' }}>×</button>
+                      </div>
+                      <div style={{ fontSize:13,color:'var(--text2)',marginTop:4 }}>{e.note}</div>
+                      {e.proof && <div style={{ fontSize:11,color:'var(--accent)',marginTop:4 }}>📎 Proof attached</div>}
+                      <div style={{ fontSize:11,color:'var(--text3)',marginTop:4 }}>{fmtDate(e.createdAt)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Score History */}
+            <div style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:24 }}>
+              <div style={{ fontFamily:'Syne',fontWeight:700,fontSize:16,marginBottom:20 }}>Score History</div>
+              {chartData.length > 1 ? (
+                <ResponsiveContainer width="100%" height={160}>
+                  <AreaChart data={chartData}>
+                    <defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#7c6af7" stopOpacity={0.3}/><stop offset="95%" stopColor="#7c6af7" stopOpacity={0}/></linearGradient></defs>
+                    <XAxis dataKey="month" tick={{fill:'#8888aa',fontSize:11}} axisLine={false} tickLine={false}/>
+                    <YAxis domain={[0,150]} tick={{fill:'#8888aa',fontSize:11}} axisLine={false} tickLine={false}/>
+                    <Tooltip contentStyle={{background:'#1a1a24',border:'1px solid #2e2e44',borderRadius:8,fontSize:13}} labelStyle={{color:'#f0f0f8'}} itemStyle={{color:'#a594ff'}}/>
+                    <Area type="monotone" dataKey="score" stroke="#7c6af7" fill="url(#sg)" strokeWidth={2}/>
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : <div style={{ color:'var(--text3)',fontSize:13 }}>History builds over multiple months.</div>}
+
+              <div style={{ marginTop:20 }}>
+                <div style={{ fontSize:12,color:'var(--text2)',fontWeight:600,marginBottom:10,textTransform:'uppercase',letterSpacing:'0.06em' }}>Monthly Breakdown</div>
+                {history.slice(-4).reverse().map(h => {
+                  const b = getBand(h.currentPoints);
+                  return (
+                    <div key={h.id} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)' }}>
+                      <span style={{ fontSize:13,color:'var(--text2)' }}>{fmtMonth(h.monthKey)}</span>
+                      <span style={{ fontFamily:'Syne',fontWeight:700,fontSize:15,color:b.color }}>{h.currentPoints}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display:'flex',alignItems:'center',justifyContent:'center',color:'var(--text3)',fontSize:14,background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12 }}>
+          Select an employee to view their appraisal
+        </div>
+      )}
+
+      {/* Event Modal */}
+      <Modal open={eventModal} onClose={()=>setEventModal(false)} title={eventForm.type==='deduction'?'Deduct Points':'Award Points'}>
+        <Sel label="Type" value={eventForm.type} onChange={e=>{
+          const t=e.target.value; const cats=t==='deduction'?DEDUCTION_CATS:ADDITION_CATS; const cat=cats[0]; const pts=t==='deduction'?DEDUCTION_PTS[cat]:ADDITION_PTS[cat];
+          setEventForm({...eventForm,type:t,category:cat,points:pts});
+        }} options={[{value:'deduction',label:'Deduction'},{value:'addition',label:'Addition'}]}/>
+        <Sel label="Category" value={eventForm.category} onChange={e=>{
+          const cat=e.target.value; const pts=eventForm.type==='deduction'?DEDUCTION_PTS[cat]:ADDITION_PTS[cat];
+          setEventForm({...eventForm,category:cat,points:pts||eventForm.points});
+        }} options={eventForm.type==='deduction'?DEDUCTION_CATS:ADDITION_CATS}/>
+        <Inp label="Points" type="number" value={eventForm.points} onChange={e=>setEventForm({...eventForm,points:e.target.value})} min="1" max="20"/>
+        <div style={{ marginBottom:16 }}>
+          <label style={{ display:'block',fontSize:12,fontWeight:600,color:'var(--text2)',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em' }}>Note (required)</label>
+          <textarea value={eventForm.note} onChange={e=>setEventForm({...eventForm,note:e.target.value})} rows={3} placeholder="Describe what happened and why points are being adjusted..." style={{ width:'100%',background:'var(--surface2)',border:'1px solid var(--border2)',borderRadius:8,padding:'10px 14px',color:'var(--text)',fontSize:14,outline:'none',resize:'vertical',fontFamily:'inherit' }}/>
+        </div>
+        <div style={{ marginBottom:20,padding:'12px 14px',background:'var(--surface2)',borderRadius:8,border:'1px solid var(--border2)' }}>
+          <div style={{ fontSize:12,fontWeight:600,color:'var(--text2)',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.06em' }}>Proof / Evidence</div>
+          <div style={{ fontSize:13,color:'var(--text3)' }}>📎 Upload screenshot, email or file — (Feature: attach via note link for now)</div>
+        </div>
+        <div style={{ display:'flex',gap:10,justifyContent:'flex-end' }}>
+          <Btn variant="ghost" onClick={()=>setEventModal(false)}>Cancel</Btn>
+          <Btn variant={eventForm.type==='deduction'?'danger':'success'} onClick={submitEvent}>
+            {eventForm.type==='deduction'?`Deduct ${eventForm.points} pts`:`Award ${eventForm.points} pts`}
+          </Btn>
+        </div>
+      </Modal>
+    </div>
+  );
+};
+
+// ─── EVENTS PAGE ───────────────────────────────────────────────────────────
+const EventsPage = () => {
+  const [events, setEvents] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [filter, setFilter] = useState('all');
+  const [monthKey] = useState(() => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; });
+
+  useEffect(() => {
+    Promise.all([api.get(`/events?monthKey=${monthKey}`), api.get('/employees')]).then(([ev,em])=>{ setEvents(ev); setEmployees(em); });
+  }, []);
+
+  const filtered = filter==='all' ? events : events.filter(e=>e.type===filter);
+
+  return (
+    <div style={{ padding:32,maxWidth:1000 }}>
+      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:32 }}>
+        <div>
+          <div style={{ fontFamily:'Syne',fontSize:28,fontWeight:800,letterSpacing:'-0.02em' }}>Point Events</div>
+          <div style={{ color:'var(--text2)',fontSize:14,marginTop:4 }}>All activity — {fmtMonth(monthKey)}</div>
+        </div>
+        <div style={{ display:'flex',gap:8 }}>
+          {['all','deduction','addition'].map(f=>(
+            <Btn key={f} variant={filter===f?'primary':'ghost'} size="sm" onClick={()=>setFilter(f)} style={{ textTransform:'capitalize' }}>{f}</Btn>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display:'flex',flexDirection:'column',gap:10 }}>
+        {filtered.map(e => {
+          const emp = employees.find(em=>em.id===e.employeeId);
+          return (
+            <div key={e.id} style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:'18px 22px',display:'flex',alignItems:'center',gap:16 }}>
+              <div style={{ width:40,height:40,borderRadius:10,background:e.type==='deduction'?'#f0556818':'#22c98a18',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,color:e.type==='deduction'?'var(--red)':'var(--green)',fontWeight:700,flexShrink:0 }}>
+                {e.type==='deduction'?'−':'+'}
+              </div>
+              <Avatar initials={emp?.avatar} size={38} color={getAvatarColor(emp?.name)}/>
+              <div style={{ flex:1,minWidth:0 }}>
+                <div style={{ display:'flex',alignItems:'center',gap:8,marginBottom:2 }}>
+                  <span style={{ fontWeight:700,fontSize:15,color:e.type==='deduction'?'var(--red)':'var(--green)' }}>
+                    {e.type==='deduction'?'':'+'}{ Math.abs(e.points)} pts
+                  </span>
+                  <span style={{ fontSize:12,padding:'2px 8px',borderRadius:20,background:e.type==='deduction'?'#f0556818':'#22c98a18',color:e.type==='deduction'?'var(--red)':'var(--green)' }}>{e.category}</span>
+                </div>
+                <div style={{ fontSize:13,color:'var(--text2)',marginBottom:3 }}>{emp?.name} · {emp?.jobTitle}</div>
+                <div style={{ fontSize:13,color:'var(--text3)' }}>{e.note}</div>
+              </div>
+              {e.proof && <div style={{ fontSize:12,color:'var(--accent)',padding:'4px 10px',background:'var(--accent)18',borderRadius:6 }}>📎 Proof</div>}
+              <div style={{ fontSize:12,color:'var(--text3)',flexShrink:0 }}>{fmtDate(e.createdAt)}</div>
+            </div>
+          );
+        })}
+        {filtered.length===0 && <div style={{ color:'var(--text3)',textAlign:'center',padding:40 }}>No events found</div>}
+      </div>
+    </div>
+  );
+};
+
+// ─── APP ───────────────────────────────────────────────────────────────────
+const App = () => {
+  const [user, setUser] = useState(() => { const t = localStorage.getItem('token'); return t ? { name:'Admin',username:'admin',role:'admin' } : null; });
+  const [page, setPage] = useState('dashboard');
+  const [navExtra, setNavExtra] = useState(null);
+
+  const navigate = (p, extra) => { setPage(p); setNavExtra(extra); };
+
+  if (!user) return <LoginPage onLogin={u=>{ setUser(u); }}/>;
+
+  return (
+    <div style={{ display:'flex',height:'100vh',overflow:'hidden' }}>
+      <Sidebar page={page} setPage={p=>{ setPage(p); setNavExtra(null); }} user={user} onLogout={()=>{ localStorage.removeItem('token'); api.token=null; setUser(null); }}/>
+      <div style={{ flex:1,overflow:'auto' }}>
+        {page==='dashboard' && <DashboardPage onNavigate={navigate}/>}
+        {page==='employees' && <EmployeesPage/>}
+        {page==='appraisals' && <AppraisalsPage key={navExtra} initialEmployee={navExtra}/>}
+        {page==='events' && <EventsPage/>}
+      </div>
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
